@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "kakoten web front"
+Parameters:
+  TagName:
+    Type: String
+  DefaultRegion:
+    Type: String
+  Env:
+    Type: String
+    Description: デプロイステージ
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+  S3DeployBucketName:
+    Description: "デプロイ空きバケット名"
+    Type: String
+    Default: ""
+  APIGatewayID:
+    Description: "API GatewayのリソースID"
+    Type: String
+    Default: ""
+Resources:
+  #================================================================================
+  # デプロイ先S3
+  #================================================================================
+  S3DeployBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${TagName}-${S3DeployBucketName}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: ObjectWriter
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3DeployBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${TagName}-${S3DeployBucketName}/*
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  #================================================================================
+  # Cloud Front
+  #================================================================================
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub ${TagName}-distribution
+        Origins:
+          - DomainName: !GetAtt S3DeployBucket.RegionalDomainName
+            Id: S3Origin
+            OriginAccessControlId: !GetAtt OAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          - DomainName: !Sub ${APIGatewayID}.execute-api.ap-northeast-1.amazonaws.com
+            Id: APIGatewayOrigin
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized (Recommended for S3)
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt CloudFrontFunctionIpRestrict.FunctionARN
+        CacheBehaviors:
+          - PathPattern: "/prod/*"
+            TargetOriginId: APIGatewayOrigin
+            ViewerProtocolPolicy: https-only
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # disable (Recommended for API Gateway)
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # AllViewerExceptHostHeader (Recommended for API Gateway)
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - PATCH
+              - POST
+              - DELETE
+        PriceClass: PriceClass_200 # 100 or 200 or ALL, 日本は100無し
+        # 日本国外からもアクセスさせたい場合は削除
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations:
+              - JP
+  #================================================================================
+  # OAC
+  #================================================================================
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Description: Access Control
+        Name: !Sub ${TagName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  #================================================================================
+  # グローバルIP WhiteList制限
+  # ※デプロイ前に実機確認すること!
+  #================================================================================
+  CloudFrontFunctionIpRestrict:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub ${TagName}-ip-restrict
+      FunctionConfig:
+        Comment: !Sub ${TagName}-ip-restrict
+        Runtime: cloudfront-js-1.0
+      AutoPublish: true
+      FunctionCode: !Sub |
+        function handler(event) {
+            var request = event.request;
+            var clientIP = event.viewer.ip;
+
+            // アクセス許可するIPを設定
+            var IP_BLACK_LIST = [""];
+            // クライアントIPが、アクセス許可するIPに含まれていなければtrueを返す
+            var isPermittedIp = !IP_BLACK_LIST.includes(clientIP);
+
+            if (isPermittedIp) {
+                // trueの場合はオリジン側へリクエストを渡す
+                return request;
+            } else {
+                var errorResponse = {
+                    statusCode: 403,
+                    statusDescription: 'Forbidden',
+                }
+                // falseの場合はViewer に対してレスポンスを返す
+                return errorResponse;
+            }
+        }

@@ -7,22 +7,30 @@ Parameters:
     Type: String
   Env:
     Type: String
-    Description: デプロイステージ
+    Description: deploy stage
     AllowedValues:
       - dev
       - stg
       - prod
   S3DeployBucketName:
-    Description: "デプロイ空きバケット名"
-    Type: String
+    Description: "S3 bucket name to deploy"
+    Type: "AWS::SSM::Parameter::Value<String>"
     Default: ""
   APIGatewayID:
-    Description: "API GatewayのリソースID"
-    Type: String
+    Description: "Resource ID of API Gateway"
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: ""
+  AcmID:
+    Description: "ACM ID"
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: ""
+  CustomDomain:
+    Description: "Custom domain URL to deploy"
+    Type: "AWS::SSM::Parameter::Value<String>"
     Default: ""
 Resources:
   #================================================================================
-  # デプロイ先S3
+  # S3 Bucket to deploy (store builded source of React)
   #================================================================================
   S3DeployBucket:
     Type: AWS::S3::Bucket
@@ -64,6 +72,12 @@ Resources:
     Properties:
       DistributionConfig:
         Comment: !Sub ${TagName}-distribution
+        Aliases:
+          - !Ref CustomDomain
+        ViewerCertificate:
+          AcmCertificateArn: !Sub arn:aws:acm:us-east-1:${AWS::AccountId}:certificate/${AcmID}
+          MinimumProtocolVersion: "TLSv1.2_2021"
+          SslSupportMethod: "sni-only"
         Origins:
           - DomainName: !GetAtt S3DeployBucket.RegionalDomainName
             Id: S3Origin
@@ -104,8 +118,7 @@ Resources:
               - PATCH
               - POST
               - DELETE
-        PriceClass: PriceClass_200 # 100 or 200 or ALL, 日本は100無し
-        # 日本国外からもアクセスさせたい場合は削除
+        PriceClass: PriceClass_200 # 100 or 200 or ALL (no available class_100 in Japan)
         Restrictions:
           GeoRestriction:
             RestrictionType: whitelist
@@ -125,8 +138,7 @@ Resources:
         SigningProtocol: sigv4
 
   #================================================================================
-  # グローバルIP WhiteList制限
-  # ※デプロイ前に実機確認すること!
+  # Global IP whiteList restriction
   #================================================================================
   CloudFrontFunctionIpRestrict:
     Type: AWS::CloudFront::Function
@@ -141,20 +153,20 @@ Resources:
             var request = event.request;
             var clientIP = event.viewer.ip;
 
-            // アクセス許可するIPを設定
+            // IP address to allow access
             var IP_BLACK_LIST = [""];
-            // クライアントIPが、アクセス許可するIPに含まれていなければtrueを返す
+
             var isPermittedIp = !IP_BLACK_LIST.includes(clientIP);
 
             if (isPermittedIp) {
-                // trueの場合はオリジン側へリクエストを渡す
+                // if true(in whitelist), return origin response
                 return request;
             } else {
                 var errorResponse = {
                     statusCode: 403,
                     statusDescription: 'Forbidden',
                 }
-                // falseの場合はViewer に対してレスポンスを返す
+                // if false(not in whitelist), return forbidden response
                 return errorResponse;
             }
         }

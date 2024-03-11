@@ -35,7 +35,7 @@ Resources:
   S3DeployBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub ${TagName}-${S3DeployBucketName}
+      BucketName: !Ref S3DeployBucketName
       OwnershipControls:
         Rules:
           - ObjectOwnership: ObjectWriter
@@ -57,7 +57,7 @@ Resources:
               - s3:GetObject
             Effect: Allow
             Resource:
-              - !Sub arn:aws:s3:::${TagName}-${S3DeployBucketName}/*
+              - !Sub arn:aws:s3:::${S3DeployBucketName}/*
             Principal:
               Service: cloudfront.amazonaws.com
             Condition:
